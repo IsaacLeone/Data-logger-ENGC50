@@ -1,72 +1,88 @@
 #include <avr/io.h>
 #include <util/delay.h>
+#include <stdio.h>
 #include "config.h"
 #include "usart.h"
-
+#include "adc.h"
+#include "filter.h"
+#include "rtc.h"
+#include "digital_sensor.h"
+#include "wireless.h"
 
 typedef enum {
     MODE_SERIAL,
     MODE_WIRELESS
 } ComMode;
 
-
 ComMode modo_ativo;
 
+// Instâncias dos filtros digitais para os canais analógicos
+EMA_Filter filtro_temp;
+EMA_Filter filtro_ldr;
+
 void System_Init(void) {
-    // Configura o pino de seleção de modo como entrada com resistor de pull-up interno
+    // Configura pino de seleção de modo
     clr_bit(COM_MODE_DDR, COM_MODE_PIN);
     set_bit(COM_MODE_PORT, COM_MODE_PIN);
-    
-    // Pequeno delay para estabilização das tensões dos pinos
     _delay_ms(10);
     
-    // Leitura do pino de configuração para decidir a versão de comunicação
-    // Se o pino estiver em nível lógico ALTO (1), assume modo Serial. Se em BAIXO (0), Wireless.
+    // Inicialização dos Periféricos de Entrada
+    ADC_Init();
+    I2C_Init();
+    DigitalSensors_Init();
+    
+    // Decide e inicializa o canal exclusivo de comunicação
     if (tst_bit(COM_MODE_PINX, COM_MODE_PIN)) {
         modo_ativo = MODE_SERIAL;
-        USART_Init(9600); // Inicializa a USART a 9600 bps
+        USART_Init(9600);
     } else {
         modo_ativo = MODE_WIRELESS;
-        // Aqui entrará a inicialização do módulo sem fio futuramente
+        Wireless_Init();
     }
 }
 
 int main(void) {
-    // Inicializa os periféricos base e define o modo de comunicação
     System_Init();
     
-    // Mensagem inicial de depuração (caso esteja no modo Serial)
+    char buffer_saida[128];
+    DateTime agora;
+    
     if (modo_ativo == MODE_SERIAL) {
-        USART_SendString("--- Data-Logger Inteligente Inicializado (Modo Serial) ---\r\n");
+        USART_SendString("--- Data-Logger Pronto (Modo Serial Ativo) ---\r\n");
     }
 
-    /* Loop principal de operação contínua */
     while (1) {
+        // 1. Leitura dos Sensores Analógicos (Brutos)
+        uint16_t raw_temp = ADC_Read(0); // Canal ADC0
+        uint16_t raw_ldr  = ADC_Read(1); // Canal ADC1
         
-        // 1. Ler Sensores Analógicos (Temperatura e LDR)
-        // TODO: Implementar leitura do ADC
+        // 2. Aplicação do Filtro Digital Passa-Baixas
+        float temp_filtrada = Filter_Update(&filtro_temp, raw_temp);
+        float ldr_filtrado  = Filter_Update(&filtro_ldr, raw_ldr);
         
-        // 2. Aplicar Filtro Passa-Baixas Digital
-        // TODO: Implementar filtro exponencial ou média móvel
+        // 3. Leitura dos Sensores Digitais
+        uint8_t chuva = Read_RainSensor();
+        uint8_t umidade = Read_HumiditySensor();
         
-        // 3. Ler Sensores Digitais (Umidade e Chuva)
-        // TODO: Implementar leitura dos pinos digitais
+        // 4. Captura do Horário Real do RTC
+        RTC_GetTime(&agora);
         
-        // 4. Obter Timestamp do RTC
-        // TODO: Implementar leitura via I2C/TWI
-        
-        // 5. Transmitir Dados pela interface selecionada
+        // 5. Formatação da String de Dados (Formato CSV para reconstrução histórica)
+        snprintf(buffer_saida, sizeof(buffer_saida),
+                 "[%02d/%02d/%04d %02d:%02d:%02d] T_raw:%d T_fil:%.1f L_raw:%d L_fil:%.1f Chuva:%d Umid:%d",
+                 agora.day, agora.month, agora.year, agora.hour, agora.minute, agora.second,
+                 raw_temp, (double)temp_filtrada, raw_ldr, (double)ldr_filtrado, chuva, umidade);
+                 
+        // 6. Transmissão Exclusiva conforme escolha inicial do Usuário
         if (modo_ativo == MODE_SERIAL) {
-            // Transmissão via USART (Exemplo temporário)
-            USART_SendString("Coletando e enviando dados via cabo...\r\n");
+            USART_SendString(buffer_saida);
+            USART_SendString("\r\n");
         } else {
-            // Transmissão via Módulo Sem Fio
-            // TODO: Implementar envio wireless
+            Wireless_SendData(buffer_saida);
         }
         
-        // Intervalo entre as coletas de dados (Ex: 2 segundos para fins de teste)
+        // Intervalo de amostragem de campo (2 segundos para avaliação em bancada)
         _delay_ms(2000);
     }
-    
-    return 0; // O programa nunca deve chegar aqui
+    return 0;
 }
