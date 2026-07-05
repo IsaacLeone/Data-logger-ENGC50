@@ -17,8 +17,6 @@ uint8_t Read_RainSensor(void) {
 }
 
 uint8_t Read_HumiditySensor(void) {
-    // Exemplo para sensor digital tipo switch (ou limiar digital).
-    // Nota: Se usar um sensor complexo de protocolo próprio como o DHT11, 
-    // uma rotina de temporização bit-a-bit detalhada precisará ser acoplada aqui.
+
     return (tst_bit(SENSOR_PINX, HUMIDITY_PIN)) ? 1 : 0;
 }
